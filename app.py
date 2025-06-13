@@ -1,4 +1,3 @@
-
 import streamlit as st
 import json
 from typing import Dict, Any, List, Optional
@@ -8,6 +7,8 @@ from json_processor import JSONProcessor
 from excel_exporter import ExcelExporter
 from api_caller import APICaller, APIError, ModelNotSupportedError, APIKeyError
 from pages.题型管理 import QuestionTypeManager
+import tiktoken
+import re
 
 # 必须是第一个 Streamlit 命令
 st.set_page_config(
@@ -141,99 +142,124 @@ class App:
             
             return model_type, model, api_key, question_type
     
+    def split_questions(self, input_text: str) -> list:
+        """按空行或换行分割题目，去除空白"""
+        # 支持空行或单换行分割
+        questions = [q.strip() for q in re.split(r'\n\s*\n|\r\n\s*\r\n|\n|\r\n', input_text.strip()) if q.strip()]
+        return questions
+
+    def count_tokens(self, text: str, encoding: str = 'cl100k_base') -> int:
+        """用tiktoken统计token数，默认兼容openai/deepseek/qwen"""
+        try:
+            enc = tiktoken.get_encoding(encoding)
+        except Exception:
+            enc = tiktoken.encoding_for_model('gpt-3.5-turbo')
+        return len(enc.encode(text))
+
+    def get_model_max_tokens(self, model_type: str) -> int:
+        """根据模型类型返回最大token数"""
+        if model_type == 'deepseek':
+            return 16000
+        elif model_type == 'qwen':
+            return 8000
+        else:
+            return 4000  # 默认安全值
+
     def render_main(self, model_type: str, model: str, api_key: str, question_type: str):
-        """渲染主要内容区域"""
-        # 输入区域
+        """渲染主要内容区域，增加自动分批处理"""
         st.header("📝 输入试题")
         input_text = st.text_area(
             "在此输入试题文本",
             height=200,
-            help="输入要转换的试题文本，支持多个试题"
+            help="输入要转换的试题文本，支持多个试题（可用换行或空行分隔）"
         )
-        
-        # 处理按钮
+
+        # 实时token统计与分批预估
+        if input_text:
+            schema = self.schema_manager.get_schema(question_type)
+            prompt_template = self.schema_manager.get_prompt(question_type)
+            prompt_tokens = self.count_tokens(prompt_template)
+            schema_tokens = self.count_tokens(json.dumps(schema, ensure_ascii=False))
+            total_tokens = prompt_tokens + schema_tokens + self.count_tokens(input_text)
+            max_tokens = self.get_model_max_tokens(model_type)
+            st.info(f"当前输入总token数约：{total_tokens} / {max_tokens}")
+            if total_tokens > max_tokens:
+                st.warning("输入内容已超出模型最大处理能力，将自动分批处理。")
+
         if st.button("开始处理"):
             if not input_text:
                 st.warning("请输入试题文本！")
                 return
-            
             if not api_key:
                 st.warning("请输入API密钥！")
                 return
-            
-            # 加载Schema
             schema = self.schema_manager.get_schema(question_type)
             if not schema:
                 st.error("加载Schema失败！")
                 return
-            
-            # 初始化JSON处理器
             self.json_processor = JSONProcessor(schema)
-            
-            # 调用API
-            with st.spinner("正在处理..."):
-                try:
-                    # 构建提示词
-                    prompt = f"""
-                    请将以下试题转换为JSON格式，要求：
-                    1. 严格按照Schema格式转换
-                    2. 保持原有的题目顺序
-                    3. 确保JSON格式正确，必须返回一个合法的JSON字符串
-                    4. 不要返回任何其他内容，只返回JSON
-                    
-                    Schema: {json.dumps(schema, ensure_ascii=False)}
-                    
-                    试题文本：
-                    {input_text}
-                    """
-                    
-                    # 调用API
-                    api_response = self.api_caller.call_api(
-                        model_type,
-                        api_key,
-                        prompt,
-                        model
-                    )
-                    
-                    if not api_response:
-                        st.error("API返回为空")
-                        return
-                    
-                    # 调试信息
-                    with st.expander("查看API响应"):
-                        st.text(api_response)
-                    
-                    # 处理JSON
+            # 自动分批处理
+            questions = self.split_questions(input_text)
+            prompt_template = self.schema_manager.get_prompt(question_type)
+            prompt_tokens = self.count_tokens(prompt_template)
+            schema_tokens = self.count_tokens(json.dumps(schema, ensure_ascii=False))
+            max_tokens = self.get_model_max_tokens(model_type)
+            safety_margin = 0.15
+            batch_token_limit = int(max_tokens * (1 - safety_margin)) - prompt_tokens - schema_tokens
+            batches = []
+            current_batch = []
+            current_tokens = 0
+            for q in questions:
+                q_tokens = self.count_tokens(q)
+                if current_tokens + q_tokens > batch_token_limit and current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_tokens = 0
+                current_batch.append(q)
+                current_tokens += q_tokens
+            if current_batch:
+                batches.append(current_batch)
+            all_results = []
+            for idx, batch in enumerate(batches):
+                batch_text = '\n\n'.join(batch)
+                prompt = prompt_template.replace('{text}', batch_text)
+                with st.spinner(f"正在处理第{idx+1}/{len(batches)}批..."):
                     try:
-                        processed_data = self.json_processor.process_json(api_response)
-                        
-                        if processed_data:
-                            st.session_state.processed_data = processed_data
-                            st.success("处理成功！")
-                        else:
-                            st.error("JSON处理失败！")
-                            st.error(self.json_processor.get_formatted_errors())
-                            
-                    except json.JSONDecodeError as e:
-                        st.error(f"JSON解析失败：{str(e)}")
-                        st.error("API返回的不是有效的JSON格式")
+                        api_response = self.api_caller.call_api(
+                            model_type,
+                            api_key,
+                            prompt,
+                            model
+                        )
+                        if not api_response:
+                            st.error(f"第{idx+1}批AI返回为空")
+                            continue
+                        with st.expander(f"查看第{idx+1}批API响应"):
+                            st.text(api_response)
+                        try:
+                            processed_data = self.json_processor.process_json(api_response)
+                            if processed_data:
+                                all_results.extend(processed_data if isinstance(processed_data, list) else [processed_data])
+                                st.success(f"第{idx+1}批处理成功！")
+                            else:
+                                st.error(f"第{idx+1}批JSON处理失败！")
+                                st.error(self.json_processor.get_formatted_errors())
+                        except json.JSONDecodeError as e:
+                            st.error(f"第{idx+1}批JSON解析失败：{str(e)}")
+                        except Exception as e:
+                            st.error(f"第{idx+1}批JSON处理过程中出现错误：{str(e)}")
+                    except (APIError, ModelNotSupportedError, APIKeyError) as e:
+                        st.error(f"第{idx+1}批API错误：{str(e)}")
                     except Exception as e:
-                        st.error(f"JSON处理过程中出现错误：{str(e)}")
-                        
-                except (APIError, ModelNotSupportedError, APIKeyError) as e:
-                    st.error(str(e))
-                except Exception as e:
-                    st.error(f"处理过程中出现错误：{str(e)}")
-        
+                        st.error(f"第{idx+1}批处理过程中出现错误：{str(e)}")
+            if all_results:
+                st.session_state.processed_data = all_results
+                st.success("全部批次处理完成！")
         # 显示处理结果
         if st.session_state.processed_data:
             st.header("📊 处理结果")
-            
-            # 显示JSON
             with st.expander("查看JSON数据"):
                 st.json(st.session_state.processed_data)
-            
-            # 导出Excel
             if st.button("导出到Excel"):
                 with st.spinner("正在生成Excel文件..."):
                     try:
@@ -241,7 +267,6 @@ class App:
                             st.session_state.processed_data,
                             question_type
                         )
-                        # 提供下载按钮
                         st.download_button(
                             label="📥 下载Excel文件",
                             data=excel_data,
