@@ -1,0 +1,7 @@
+{
+    "api_keys": {
+        "deepseek": "YOUR_DEEPSEEK_API_KEY",
+        "qwen": "YOUR_QWEN_API_KEY"
+    },
+    "selected_model": "deepseek"
+} 
