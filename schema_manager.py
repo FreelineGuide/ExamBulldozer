@@ -457,7 +457,7 @@ E. 丝绸
             with open("custom_schemas.json", "w", encoding="utf-8") as f:
                 json.dump(self.schemas, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存自定义题型失败：{str(e)}")
+            print(f"保存自定义题型失败：{str(e)}") 
 
     def update_prompt(self, schema_type: str, prompt_template: str) -> None:
         """更新提示词模板"""
