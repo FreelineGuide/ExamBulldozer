@@ -53,7 +53,7 @@ class App:
         # 主导航
         st.session_state.current_tab = st.radio(
             "选择功能",
-            ["✨ 试题转换", "📝 题型管理"],
+            ["✨ 试题转换", "📝 题型管理", "➕ 创建题型"],
             horizontal=True,
             label_visibility="collapsed",
             key="main_nav"
@@ -277,6 +277,74 @@ class App:
                     except Exception as e:
                         st.error(f"导出失败：{str(e)}")
     
+    def render_create_type_tab(self):
+        """渲染新建题型标签页"""
+        st.title("➕ 创建新题型")
+        st.markdown("""
+        在这里可以快速创建全新的题型、Schema和提示词模板。
+        """)
+        # 新建表单（复用题型管理页的创建逻辑）
+        with st.form("create_type_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                type_code = st.text_input(
+                    "题型代码",
+                    help="题型的唯一标识符，例如：'single_choice'",
+                    placeholder="输入英文代码"
+                )
+            with col2:
+                type_name = st.text_input(
+                    "题型名称",
+                    help="题型的显示名称，例如：'单选题'",
+                    placeholder="输入中文名称"
+                )
+            type_desc = st.text_input(
+                "题型描述",
+                help="对这个题型的简要描述",
+                placeholder="输入题型描述"
+            )
+            st.subheader("📋 Schema定义")
+            schema_str = st.text_area(
+                "JSON Schema",
+                value="",
+                height=300,
+                help="输入符合JSON Schema规范的定义"
+            )
+            st.subheader("💭 提示词模板")
+            prompt_template = st.text_area(
+                "提示词模板",
+                value="",
+                height=300,
+                help="输入提示词模板，使用{text}作为试题文本的占位符"
+            )
+            # 预览
+            if schema_str and prompt_template:
+                with st.expander("👀 预览配置", expanded=False):
+                    try:
+                        schema = json.loads(schema_str)
+                        st.json({"schema": schema, "prompt_template": prompt_template})
+                    except Exception:
+                        st.warning("Schema不是有效的JSON格式")
+            # 提交按钮
+            if st.form_submit_button("💾 创建题型"):
+                try:
+                    if not all([type_code, type_name, type_desc, schema_str, prompt_template]):
+                        st.error("请填写所有必要信息")
+                        return
+                    schema = json.loads(schema_str)
+                    self.schema_manager.add_custom_schema(
+                        name=type_code,
+                        description=type_name,
+                        schema=schema,
+                        prompt_template=prompt_template
+                    )
+                    st.success(f"题型 {type_name} 创建成功！")
+                    if st.button("去题型管理页查看", key="goto_manage"):
+                        st.session_state.current_tab = "📝 题型管理"
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"保存失败：{str(e)}")
+
     def run(self):
         """运行应用"""
         self.render_header()
@@ -284,8 +352,10 @@ class App:
         # 根据当前标签页显示不同内容
         if st.session_state.current_tab == "✨ 试题转换":
             self.render_conversion_tab()
-        else:
+        elif st.session_state.current_tab == "📝 题型管理":
             self.question_type_manager.render()
+        elif st.session_state.current_tab == "➕ 创建题型":
+            self.render_create_type_tab()
 
 if __name__ == "__main__":
     app = App()
