@@ -283,7 +283,10 @@ class App:
         st.markdown("""
         在这里可以快速创建全新的题型、Schema和提示词模板。
         """)
-        # 新建表单（复用题型管理页的创建逻辑）
+        if 'create_type_success' not in st.session_state:
+            st.session_state.create_type_success = False
+        if 'create_type_name' not in st.session_state:
+            st.session_state.create_type_name = ''
         with st.form("create_type_form"):
             col1, col2 = st.columns(2)
             with col1:
@@ -326,7 +329,8 @@ class App:
                     except Exception:
                         st.warning("Schema不是有效的JSON格式")
             # 提交按钮
-            if st.form_submit_button("💾 创建题型"):
+            created = st.form_submit_button("💾 创建题型")
+            if created:
                 try:
                     if not all([type_code, type_name, type_desc, schema_str, prompt_template]):
                         st.error("请填写所有必要信息")
@@ -338,12 +342,17 @@ class App:
                         schema=schema,
                         prompt_template=prompt_template
                     )
-                    st.success(f"题型 {type_name} 创建成功！")
-                    if st.button("去题型管理页查看", key="goto_manage"):
-                        st.session_state.current_tab = "📝 题型管理"
-                        st.rerun()
+                    st.session_state.create_type_success = True
+                    st.session_state.create_type_name = type_name
                 except Exception as e:
                     st.error(f"保存失败：{str(e)}")
+        # 表单外部显示跳转按钮
+        if st.session_state.create_type_success:
+            st.success(f"题型 {st.session_state.create_type_name} 创建成功！")
+            if st.button("去题型管理页查看", key="goto_manage"):
+                st.session_state.current_tab = "📝 题型管理"
+                st.session_state.create_type_success = False
+                st.rerun()
 
     def run(self):
         """运行应用"""
